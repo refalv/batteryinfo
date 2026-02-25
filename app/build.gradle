@@ -11,9 +11,9 @@ android {
         applicationId 'com.example.batteryinfo'
         minSdk 21
         // ⚠️ DIUBAH: Target SDK dinaikkan agar sesuai dengan fitur Android terbaru
-        targetSdk 35 
-        versionCode 1
-        versionName "1.0"
+        targetSdk 36 
+        versionCode 2
+        versionName "2.0"
 
         testInstrumentationRunner 'androidx.test.runner.AndroidJUnitRunner'
     }
