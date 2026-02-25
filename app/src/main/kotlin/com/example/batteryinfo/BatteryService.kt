@@ -141,7 +141,8 @@ class BatteryService : Service() {
         paint.color = when {
             percent <= 20 -> Color.parseColor("#FF5252") 
             percent <= 50 -> Color.parseColor("#FFD740") 
-            else -> Color.parseColor("#69F0AE")          
+            percent <= 90 -> Color.parseColor("#69F0AE") 
+            else -> Color.parseColor("#33B5E5")          
         }
 
         if (value.length >= 3) {
