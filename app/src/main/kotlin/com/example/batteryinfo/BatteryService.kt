@@ -9,6 +9,7 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.content.pm.ServiceInfo
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color
@@ -16,12 +17,17 @@ import android.graphics.Paint
 import android.graphics.Typeface
 import android.os.BatteryManager
 import android.os.Build
+import android.os.Handler
 import android.os.IBinder
+import android.os.Looper
+import android.os.PowerManager
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.graphics.drawable.IconCompat
 import java.text.SimpleDateFormat
-import java.util.*
+import java.util.Date
+import java.util.Locale
+import java.util.concurrent.Executors
 
 class BatteryService : Service() {
 
@@ -32,26 +38,31 @@ class BatteryService : Service() {
     private val ACTION_BATTERY_STATUS = "BATTERY_STATUS_EVENT"
     private val ACTION_REQUEST_STATUS = "REQUEST_STATUS"
 
-    private val timeFormat = SimpleDateFormat("HH:mm:ss", Locale.getDefault())
-    
     private lateinit var dbHelper: LogDBHelper
+    private val dbExecutor = Executors.newSingleThreadExecutor()
 
-    private var lastBatteryPercent = -1
+    // Data baterai terakhir
+    private var lastBatteryPercent = 0
     private var lastChargingState = "Unknown"
     private var lastTemp = 0.0
     private var lastVolt = 0
 
     private var isFirstRun = true
 
-    // Timer 1.25 Detik (Menggunakan Class PeriodicTask dari file sebelah)
-    private val task = PeriodicTask({ 
-        updateNotification() 
-    }, 1_250L)
+    // Cache untuk bitmap ikon dinamis (mencegah alokasi berulang)
+    private val iconCache = mutableMapOf<String, Bitmap>()
+
+    // Rotasi ikon status bar (persen <-> suhu)
+    private var iconDisplayMode = 0   // 0 = percent, 1 = temperature
+    private val iconRotationInterval = 5000L   // 5 detik
+    private val iconHandler = Handler(Looper.getMainLooper())
+    private var iconRunnable: Runnable? = null
 
     override fun onCreate() {
         super.onCreate()
         dbHelper = LogDBHelper(this)
 
+        // Receiver untuk request status dari UI
         val filterStatus = IntentFilter(ACTION_REQUEST_STATUS)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             registerReceiver(requestStatusReceiver, filterStatus, Context.RECEIVER_NOT_EXPORTED)
@@ -59,135 +70,164 @@ class BatteryService : Service() {
             registerReceiver(requestStatusReceiver, filterStatus)
         }
 
+        // Receiver untuk perubahan baterai (selalu aktif)
         val batteryFilter = IntentFilter(Intent.ACTION_BATTERY_CHANGED)
         registerReceiver(batteryReceiver, batteryFilter)
 
-        // 🔥 FITUR HEMAT BATERAI: Deteksi Layar Mati/Nyala
-        // Agar Timer berhenti saat HP dikunci (Deep Sleep aman)
+        // Receiver untuk layar menyala/mati (hemat baterai)
         val screenFilter = IntentFilter().apply {
             addAction(Intent.ACTION_SCREEN_ON)
             addAction(Intent.ACTION_SCREEN_OFF)
         }
         registerReceiver(screenReceiver, screenFilter)
+
+        // Mulai rotasi ikon jika layar sedang menyala
+        if (isScreenOn()) {
+            startIconRotation()
+        }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         Log.d("BatteryService", "onStartCommand()")
-        super.onStartCommand(intent, flags, startId)
-
+        // Tampilkan notifikasi awal (data masih 0, akan segera diperbarui oleh receiver)
         try {
-            startForeground(notificationId, createNotification(0, "Init..."))
+            startForeground(notificationId, createNotification(0, "Init...", 0.0, 0))
         } catch (e: Exception) {
             e.printStackTrace()
         }
-
-        // Jalankan Timer saat service mulai
-        task.start()
-
         return START_STICKY
     }
 
     override fun onDestroy() {
         super.onDestroy()
+        stopIconRotation()
         try {
             unregisterReceiver(batteryReceiver)
             unregisterReceiver(requestStatusReceiver)
-            // 🔥 Jangan lupa unregister screen receiver juga
             unregisterReceiver(screenReceiver)
         } catch (e: Exception) {
             e.printStackTrace()
         }
-        
-        // Matikan timer saat service hancur
-        task.stop()
+        dbExecutor.shutdown()
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
 
-    // ================= 📺 SCREEN RECEIVER (LOGIKA HEMAT BATERAI) =================
-    
-    private val screenReceiver = object : BroadcastReceiver() {
-        override fun onReceive(context: Context, intent: Intent) {
-            if (intent.action == Intent.ACTION_SCREEN_OFF) {
-                // Layar Mati -> Stop Timer (Agar Foreground Usage tidak 90%)
-                Log.d("BatteryService", "Screen OFF: Pausing Timer")
-                task.stop()
-            } else if (intent.action == Intent.ACTION_SCREEN_ON) {
-                // Layar Nyala -> Refresh sekali & Jalankan Timer Lagi
-                Log.d("BatteryService", "Screen ON: Resuming Timer")
-                updateNotification()
-                task.start()
+    // ================= KONTROL ROTASI IKON =================
+
+    private fun startIconRotation() {
+        stopIconRotation()
+        iconRunnable = object : Runnable {
+            override fun run() {
+                // Ganti mode 0 -> 1 -> 0
+                iconDisplayMode = 1 - iconDisplayMode
+                updateNotification()   // rebuild notifikasi dengan ikon baru
+                iconHandler.postDelayed(this, iconRotationInterval)
             }
+        }
+        iconHandler.postDelayed(iconRunnable!!, iconRotationInterval)
+        Log.d("BatteryService", "Icon rotation started")
+    }
+
+    private fun stopIconRotation() {
+        iconRunnable?.let { iconHandler.removeCallbacks(it) }
+        iconRunnable = null
+        Log.d("BatteryService", "Icon rotation stopped")
+    }
+
+    private fun isScreenOn(): Boolean {
+        val pm = getSystemService(PowerManager::class.java)
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.KITKAT_WATCH) {
+            pm.isInteractive
+        } else {
+            @Suppress("DEPRECATION")
+            pm.isScreenOn
         }
     }
 
-    // ================= 🎨 FITUR IKON ANGKA BERWARNA =================
-    
+    // ================= IKON DINAMIS (ANGKA DI STATUS BAR) =================
+
+    private fun getIconText(): String {
+        return when (iconDisplayMode) {
+            0 -> lastBatteryPercent.toString()
+            1 -> "${lastTemp.toInt()}°"
+            else -> lastBatteryPercent.toString()
+        }
+    }
+
     private fun renderIcon(value: String): IconCompat? {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) return null
 
+        // Cek cache
+        iconCache[value]?.let { return IconCompat.createWithBitmap(it) }
+
         val density = resources.displayMetrics.density
-        val w = (24 * density).toInt() 
-        val bitmap = Bitmap.createBitmap(w, w, Bitmap.Config.ARGB_8888) 
+        val w = (24 * density).toInt()
+        val bitmap = Bitmap.createBitmap(w, w, Bitmap.Config.ARGB_8888)
         val canvas = Canvas(bitmap)
 
-        val paint = Paint()
-        paint.typeface = Typeface.DEFAULT_BOLD
-        paint.style = Paint.Style.FILL
-        paint.textAlign = Paint.Align.CENTER
-        paint.isAntiAlias = true
-        
+        val paint = Paint().apply {
+            typeface = Typeface.DEFAULT_BOLD
+            style = Paint.Style.FILL
+            textAlign = Paint.Align.CENTER
+            isAntiAlias = true
+        }
+
         val percent = value.toIntOrNull() ?: 0
         paint.color = when {
-            percent <= 20 -> Color.parseColor("#FF5252") 
-            percent <= 50 -> Color.parseColor("#FFD740") 
-            percent <= 90 -> Color.parseColor("#69F0AE") 
-            else -> Color.parseColor("#33B5E5")          
+            percent <= 20 -> Color.parseColor("#FF5252")
+            percent <= 50 -> Color.parseColor("#FFD740")
+            percent <= 90 -> Color.parseColor("#69F0AE")
+            else -> Color.parseColor("#33B5E5")
         }
 
         if (value.length >= 3) {
-            paint.textSize = 15f * density 
+            paint.textSize = 15f * density
         } else {
             paint.textSize = 20f * density
         }
 
-        canvas.drawText(value, w / 2f, w / 1.7f + (3 * density), paint)
+        canvas.drawText(value, w / 2f, w / 1.7f + (4 * density), paint)
 
+        // Simpan ke cache
+        iconCache[value] = bitmap
         return IconCompat.createWithBitmap(bitmap)
     }
 
     // ================= NOTIFICATION =================
 
-    private fun createNotification(percent: Int, charging: String): Notification {
+    private fun createNotification(percent: Int, charging: String, temp: Double, volt: Int): Notification {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val channel = NotificationChannel(
                 channelId,
                 "Battery Monitor Service",
-                NotificationManager.IMPORTANCE_DEFAULT
+                NotificationManager.IMPORTANCE_HIGH
             ).apply {
                 description = "Monitoring battery state"
-                setSound(null, null)
-                enableVibration(false)
-                setShowBadge(false)
             }
             val manager = getSystemService(NotificationManager::class.java)
             manager?.createNotificationChannel(channel)
         }
 
-        val notificationIntent = Intent(this, MainActivity::class.java)
+        val notificationIntent = Intent(this, MainActivity::class.java)//.apply {
+              //  flags = Intent.FLAG_ACTIVITY_SINGLE_TOP
+           // }
         val pendingIntent = PendingIntent.getActivity(
             this, 0, notificationIntent,
+            // PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
         )
 
-        val dynamicIcon = renderIcon(percent.toString())
+        // Ikon bergantian (persen atau suhu)
+        val iconText = getIconText()
+        val dynamicIcon = renderIcon(iconText)
 
         val builder = NotificationCompat.Builder(this, channelId)
-            .setContentTitle("Battery Level: $percent%")
-            .setContentText("Status: $charging")
+            .setContentTitle("Battery: $percent%")
+            .setContentText("$charging | ${temp}°C | ${volt}mV")
             .setContentIntent(pendingIntent)
+            .setOnlyAlertOnce(false)
             .setOngoing(true)
-            .setOnlyAlertOnce(true)
             .setForegroundServiceBehavior(NotificationCompat.FOREGROUND_SERVICE_IMMEDIATE)
             .setPriority(NotificationCompat.PRIORITY_HIGH)
             .setShowWhen(false)
@@ -203,10 +243,10 @@ class BatteryService : Service() {
 
     private fun updateNotification() {
         val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-        nm.notify(notificationId, createNotification(lastBatteryPercent, lastChargingState))
+        nm.notify(notificationId, createNotification(lastBatteryPercent, lastChargingState, lastTemp, lastVolt))
     }
 
-    // ================= RECEIVERS =================
+    // ================= BROADCAST RECEIVERS =================
 
     private val requestStatusReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
@@ -220,6 +260,24 @@ class BatteryService : Service() {
         }
     }
 
+    private val screenReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context, intent: Intent) {
+            when (intent.action) {
+                Intent.ACTION_SCREEN_OFF -> {
+                    Log.d("BatteryService", "Screen OFF: stop rotation")
+                    stopIconRotation()
+                }
+                Intent.ACTION_SCREEN_ON -> {
+                    Log.d("BatteryService", "Screen ON: start rotation & refresh")
+                    startIconRotation()
+                    updateNotification()   // refresh segera
+                }
+            }
+        }
+    }
+
+    // ================= LOGIKA PEMROSESAN BATERAI =================
+
     private fun handleBatteryIntent(intent: Intent) {
         val level = intent.getIntExtra(BatteryManager.EXTRA_LEVEL, -1)
         val scale = intent.getIntExtra(BatteryManager.EXTRA_SCALE, -1)
@@ -227,7 +285,7 @@ class BatteryService : Service() {
 
         val percent = (level * 100) / scale
         val status = intent.getIntExtra(BatteryManager.EXTRA_STATUS, -1)
-        
+
         val chargingState = when (status) {
             BatteryManager.BATTERY_STATUS_CHARGING -> "Charging"
             BatteryManager.BATTERY_STATUS_DISCHARGING -> "Discharging"
@@ -239,44 +297,45 @@ class BatteryService : Service() {
         val temp = intent.getIntExtra(BatteryManager.EXTRA_TEMPERATURE, 0) / 10.0
         val volt = intent.getIntExtra(BatteryManager.EXTRA_VOLTAGE, 0)
 
+        // Cek perubahan
         val isStateChanged = chargingState != lastChargingState
         val isPercentChanged = percent != lastBatteryPercent
-        
+        val isTempChanged = kotlin.math.abs(temp - lastTemp) >= 0.5
+        val isVoltChanged = kotlin.math.abs(volt - lastVolt) >= 50
+
+        // Update nilai terbaru
+        val oldPercent = lastBatteryPercent
+        val oldState = lastChargingState
+        lastBatteryPercent = percent
+        lastChargingState = chargingState
         lastTemp = temp
         lastVolt = volt
 
-        if (isStateChanged || isPercentChanged) {
-            val oldState = lastChargingState
-            
-            lastBatteryPercent = percent
-            lastChargingState = chargingState
-            
+        // Jika ada perubahan signifikan, update notifikasi dan log
+        if (isStateChanged || isPercentChanged || isTempChanged || isVoltChanged) {
             updateNotification()
 
-            val time = timeFormat.format(Date())
-            val percent = String.format("%3d", percent)
-
+            // val time = timeFormat.get().format(Date())
+            val time = SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date())
             if (!isFirstRun) {
                 if (isStateChanged) {
                     val icon = if (chargingState == "Charging") "🔌" else "🔋"
                     val event = if (chargingState == "Charging") "Connected" else "Disconnected"
-                    saveAndBroadcastLog("$time | $percent% | $temp°C | $icon $event")
+                    saveAndBroadcastLog("$time | ${String.format("%3d", percent)}% | ${temp}°C | $icon $event")
                 }
-
                 if (isPercentChanged) {
-                    val statusIcon = when(chargingState) {
+                    val statusIcon = when (chargingState) {
                         "Charging" -> "⚡"
                         "Full" -> "✅"
                         "Discharging" -> "🔻"
                         else -> "•"
                     }
-                    saveAndBroadcastLog("$time | $percent% | $temp°C | $statusIcon $chargingState")
+                    saveAndBroadcastLog("$time | ${String.format("%3d", percent)}% | ${temp}°C | $statusIcon $chargingState")
                 }
             } else {
                 isFirstRun = false
-                saveAndBroadcastLog("$time | $percent% | $temp°C | 🚀 Service Start")
+                saveAndBroadcastLog("$time | ${String.format("%3d", percent)}% | ${temp}°C | 🚀 Service Start")
             }
-            
             sendStatus()
         }
     }
@@ -293,7 +352,9 @@ class BatteryService : Service() {
     }
 
     private fun saveAndBroadcastLog(msg: String) {
-        dbHelper.addLog(msg)
+        dbExecutor.execute {
+            dbHelper.addLog(msg)
+        }
         val intent = Intent(ACTION_BATTERY_LOG).apply {
             setPackage(packageName)
             putExtra("log", msg)
