@@ -27,11 +27,6 @@ class LogDBHelper(context: Context) : SQLiteOpenHelper(context, "BatteryLogs.db"
         
         // Masukkan data baru
         db.insert("logs", null, values)
-        
-        // Kita tidak melakukan penghapusan data lama di sini, 
-        // jadi data akan tersimpan selamanya sampai user menekan tombol "Clear Logs".
-        
-        db.close() 
     }
 
     // Fungsi Ambil Semua Log
@@ -40,8 +35,8 @@ class LogDBHelper(context: Context) : SQLiteOpenHelper(context, "BatteryLogs.db"
         val logs = mutableListOf<String>()
         val db = this.readableDatabase
         
-        // Query: Ambil pesan, urutkan ID dari Besar ke Kecil (3, 2, 1)
-        val cursor = db.rawQuery("SELECT message FROM logs ORDER BY id DESC", null)
+        // Query: Ambil pesan, urutkan ID dari Besar ke Kecil, max 500
+        val cursor = db.rawQuery("SELECT message FROM logs ORDER BY id DESC LIMIT 500", null)
         
         if (cursor.moveToFirst()) {
             do {
@@ -50,7 +45,6 @@ class LogDBHelper(context: Context) : SQLiteOpenHelper(context, "BatteryLogs.db"
         }
         
         cursor.close()
-        db.close()
         return logs
     }
 
@@ -58,6 +52,5 @@ class LogDBHelper(context: Context) : SQLiteOpenHelper(context, "BatteryLogs.db"
     fun deleteAllLogs() {
         val db = this.writableDatabase
         db.execSQL("DELETE FROM logs") // Menghapus seluruh isi tabel
-        db.close()
     }
 }

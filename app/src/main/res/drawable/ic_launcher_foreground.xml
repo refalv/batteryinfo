@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <!-- Battery body outline (rounded rect + terminal bump) -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:strokeColor="#FFFFFF"
+        android:strokeWidth="1"
+        android:strokeLineJoin="round"
+        android:strokeLineCap="round"
+        android:pathData="
+            M34,30
+            L70,30
+            Q74,30 74,34
+            L74,46
+            L79,46
+            L79,62
+            L74,62
+            L74,74
+            Q74,78 70,78
+            L34,78
+            Q30,78 30,74
+            L30,34 
+            Q30,30 34,30
+            Z" />
+
+    <!-- Battery fill (75% level) -->
+    <path
+        android:fillColor="#69F0AE"
+        android:pathData="M33,33 L69,33 L69,75 L33,75 Z" />
+
+    <!-- Lightning bolt -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="
+            M62,33
+            L46,56
+            L54,56
+            L50,72
+            L66,50
+            L58,50
+            L62,33
+            Z" />
+</vector>

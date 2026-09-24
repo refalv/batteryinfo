@@ -11,8 +11,8 @@ android {
         applicationId = 'com.example.batteryinfo'
         minSdk = 26
         targetSdk = 36 
-        versionCode = 3
-        versionName = "3.0"
+        versionCode = 4
+        versionName = "4.0"
 
         testInstrumentationRunner = 'androidx.test.runner.AndroidJUnitRunner'
     }
@@ -20,7 +20,7 @@ android {
         release {
             minifyEnabled = true
             shrinkResources = true
-            // proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
+            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
         }
         debug {
             minifyEnabled = false
@@ -28,8 +28,7 @@ android {
     }
 
     buildFeatures {
-        // ✅ Tetap true tidak masalah, tapi di MainActivity kita pakai findViewById
-        viewBinding = true
+        viewBinding = false
     }
 
     compileOptions {
@@ -44,12 +43,7 @@ android {
 }
 
 dependencies {
-    implementation libs.androidx.core.ktx
-    implementation libs.androidx.appcompat
-    implementation libs.material
-    implementation libs.androidx.constraintlayout
-
-    // 🔥 WAJIB DITAMBAHKAN: Untuk fungsi enableEdgeToEdge() di MainActivity
-    // Tanpa ini, Android 16 app akan error saat compile.
-    implementation 'androidx.activity:activity-ktx:1.9.0'
+    // Minimal: Kotlin runtime + AndroidX core (wajib untuk NotificationCompat)
+    implementation 'org.jetbrains.kotlin:kotlin-stdlib:2.1.0'
+    implementation 'androidx.core:core:1.13.1'
 }
